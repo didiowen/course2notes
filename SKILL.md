@@ -11,6 +11,7 @@ description: 把「買了看不完的線上課程」一鍵變成漂亮 HTML 筆�
 **每個平台的結構都不一樣，沒有固定腳本能通吃。你的價值是「臨場偵察、看懂這個平台、當場決定怎麼抓」。** 底下的腳本是「通用積木」，不是萬用爬蟲——你要用它們，但結構怎麼列舉、影片掛在哪，要靠你先偵察再決定，不要假設固定的 CSS 選擇器或網址格式。
 
 ## 前置：由「你（agent）」啟動除錯 Chrome，使用者只需登入
+> **先判斷要不要做這整段。** 這段前置（開除錯 Chrome、等使用者登入）是為了**要登入才看得到的付費課程**。若使用者給的是**公開、免登入就能看的內容**（單支或一批 YouTube／Vimeo 公開影片、公開播放清單），**整段前置與步驟 1–2 全部跳過**，走下面的〈公開影片直通模式〉。別為了一支公開 YouTube 影片叫使用者去登入。
 **全程盡量在對話裡完成，不要叫使用者去開 CMD、貼指令。** 安裝(git clone)、啟動瀏覽器這些 shell 動作都由你自己跑。使用者唯一要動手的是「登入課程平台」（為了安全，密碼只能他本人輸入；也不要用無頭瀏覽器登入，會觸發平台機器人偵測）。
 0. **確保相依套件就緒**：由你（agent）在對話裡自己跑，別叫使用者開 CMD。**每次跑前先做一次便宜的快檢**（不是每次都重裝）：`node -e "require.resolve('playwright-core')"` 與 `<python> -m yt_dlp --version` 有沒有過——過了就直接往下，沒過才做下面完整安裝（`/plugin` 安裝的技能更新後 node_modules 可能被重置，所以別假設「裝過就永遠在」）。
    - **系統層級先體檢**：依序確認 `node --version`（**要 ≥ v18**，太舊視同缺、要升級——playwright-core 需要）、Python（Windows 試 `python`/`py`，Mac/Linux 試 `python3`；**Windows 若打 `python` 跳出 Microsoft Store，那是假的佔位程式、不是 Python**，要裝真的）、`ffmpeg -version`、瀏覽器（Chrome **或 Edge/Brave 皆可**）是否存在。**缺了先徵求使用者同意、然後由你代裝**：Windows 用 `winget install --accept-source-agreements --accept-package-agreements <pkg>`（`OpenJS.NodeJS.LTS`／`Python.Python.3.12`／`Gyan.FFmpeg`；瀏覽器通常已有 Edge、免裝），Mac 見下一條（brew 要使用者自己在 Terminal 跑）。winget 需要系統管理員權限，非管理員帳號會失敗→改給官方下載連結手動裝。
@@ -40,11 +41,23 @@ description: 把「買了看不完的線上課程」一鍵變成漂亮 HTML 筆�
 
 ## 流程總覽（步驟 0–8）
 
+### 快速分支：公開影片直通模式（免 CDP／免登入；判定為公開內容才走這條）
+使用者丟的是公開 YouTube／Vimeo 連結或播放清單時，**不要開除錯 Chrome、不要 recon/sniff**——那些是為了突破登入牆，公開內容用不上。直接：
+1. `yt-dlp --list-subs <url>` 看字幕軌；照下面〈字幕優先〉的四個眉角挑軌（人工 > `-orig` 自動軌）。
+2. 有字幕：`yt-dlp --skip-download --write-subs --sub-langs <軌名> -o "<工作區>/subs/%(playlist_index)s.%(ext)s" <url>`，再 `python3 subclean.py <工作區>/subs <工作區>/transcript`。
+3. 沒字幕：照常 `yt-dlp -f bestaudio` 抓音訊，走步驟 4 的 `transcribe.py`。
+4. 之後**步驟 4.5 起的流程完全共用**（做筆記子代理 → `render.js` 出 HTML）——`subclean.py` 的輸出檔名與 `transcribe.py` 一模一樣，下游不用改。
+投影片截圖那題照樣問（YouTube 講座常是投影片型，值得開）。
+
 ### 1. 偵察（Recon）— 這步是靈魂，要臨場判斷
 連上 CDP，載入使用者給的課程網址，觀察：
 - **結構**：課程 → 章節 → 單元 的層級與網址型態（列出頁面上的連結、找出重複的路徑樣式）。注意有些平台「每個章節頁都會列出整門課大綱」→ 列舉時要按「屬於該章節」過濾去重（我們在 LearnDash 踩過）。
 - **媒體來源**：打開一個真的單元頁，攔網路請求，看影片/音訊掛在哪。常見：`player.vimeo.com/video/<id>`（Vimeo 私人嵌入）、`w.soundcloud.com/player?...tracks/<id>...secret_token=`（SoundCloud 私人音軌）、`youtube.com/embed/<id>`、`.m3u8`（HLS）、直接 `<video src>`。**ID 常只出現在網路請求、不在原始 HTML** → 要用瀏覽器載入攔請求，不能只抓靜態 HTML。
-- **字幕優先（強烈建議先找）**：偵察時順手看有沒有**官方字幕／逐字稿軌**——Vimeo 的 `texttrack`／`.vtt`、YouTube captions、平台自帶的字幕或講義逐字稿。**有字幕就字幕優先**：直接抓字幕檔（yt-dlp 可用 `--write-subs`／`--write-auto-subs --sub-langs <lang> --skip-download`，或攔 `.vtt`/`.srt` 網址下載）當逐字稿，**跳過下載音訊＋whisper 這兩步**，品質（人工字幕沒有 ASR 錯字）與速度都大勝。**whisper 只當沒有字幕時的 fallback**。（sat.cool 的 Vimeo 字幕軌驗過非常成功。）
+- **字幕優先（強烈建議先找）**：偵察時順手看有沒有**官方字幕／逐字稿軌**——Vimeo 的 `texttrack`／`.vtt`、YouTube captions、平台自帶的字幕或講義逐字稿。**有字幕就字幕優先**：直接抓字幕檔（yt-dlp 可用 `--write-subs`／`--write-auto-subs --sub-langs <lang> --skip-download`，或攔 `.vtt`/`.srt` 網址下載）當逐字稿，**跳過下載音訊＋whisper 這兩步**，品質（人工字幕沒有 ASR 錯字）與速度都大勝。**whisper 只當沒有字幕時的 fallback**。（sat.cool 的 Vimeo 字幕軌驗過非常成功。）抓字幕的四個眉角：
+  - **先 `--list-subs` 看有哪些軌，人工字幕永遠優先於自動字幕。**
+  - **YouTube 的自動字幕只取原文那軌**——軌名以 `-orig` 結尾的才是真正的 ASR 原文軌（如 `en-orig`）；不帶 `-orig` 的多半是 YouTube 現場機翻，會被重度 rate-limit（HTTP 429）而抓不下來。**要別的語言請讓做筆記那步去翻，不要叫 yt-dlp 翻。**（此作法出自 htlin222/sum-the-yt 的說明，本技能尚未獨立驗證，抓 429 時第一個就試它。）
+  - **會員限定／被限流的 YouTube 用 `--cookies-from-browser`**：你前置已經開了一個登入好的瀏覽器，直接 `--cookies-from-browser chrome:<工作區>/chrome-profile`（Edge 用 `edge:`、Brave 用 `brave:`）把登入狀態帶給 yt-dlp，別另外要使用者匯出 cookies.txt。
+  - **拿到的字幕檔一定要過 `subclean.py`**（見步驟 4）——自動字幕是「滾動」的，同一句會連著重印好幾次，直接餵給子代理會讓逐字稿膨脹數倍、筆記也跟著爛掉。
 - **純文字課**：若單元頁沒有任何影音、而是文章（如「百科」類），改走「爬文字」路徑（抓內文容器的 innerText），跳過下載與轉錄。
 - **拿不到的**：標「已下架／DRM 加密」的單元記錄下來、告知使用者，不要卡住。
 - **投影片型 vs 純講者（決定要不要截圖，順手判一下）**：抽一個真的單元、瞄一眼畫面，判斷這門課主要是「投影片型」（畫面是圖表／示意圖／軟體操作／照片等**非文字資訊**）還是「純講者頭像／口播」或「投影片只有文字條列」。把這個判斷記下來——它決定下一段要不要問使用者做投影片截圖。
@@ -64,6 +77,7 @@ description: 把「買了看不完的線上課程」一鍵變成漂亮 HTML 筆�
 - **`download.js` 非零離開碼＝有單元沒抓到**（逾時／簽章過期／被擋內網主機）。看它印的失敗清單：簽章 m3u8 過期就重跑該單元的 sniff 拿新 URL 再下載；仍失敗就告知使用者哪幾單元缺、別默默帶著缺漏往下做。
 
 ### 4. 轉錄（Transcribe）
+**走字幕路徑的單元不進這步**：字幕檔改用 `python3 subclean.py <subs_dir> <transcript_dir>` 正規化——它會去掉滾動字幕的重複與 inline tag，輸出與 transcribe.py 同名同格式的 `<stem>.fulltext.txt`／`<stem>.timestamped.txt`，所以同一門課「有些單元有字幕、有些沒有」可以兩條路徑混用，做筆記那步看不出差別。以下只講沒有字幕、要 whisper 的單元。
 `python transcribe.py <audio_dir> <transcript_dir> [--api]`（**用步驟 0 體檢可用的直譯器**：Windows 可能是 `python` 或 `py`，Mac/Linux 用 `python3`——和裝套件的那個要一致）：**自動選後端**——有 NVIDIA 顯卡 → 本機 faster-whisper large-v3（免費、音檔不離開電腦，需先裝 cuDNN＋cuBLAS，見步驟 0）；Apple Silicon Mac → 本機 mlx-whisper（免費、吃 Mac GPU、音檔不離開電腦）；都沒有（Intel Mac／AMD／無顯卡）→ 提示改用 `--api`（需自備 `OPENAI_API_KEY`），並告知每分鐘成本。**提醒使用者：`--api` 模式會把音檔上傳給 OpenAI 轉錄**（作者端收不到，但音檔確實會離開本機到 OpenAI）。
 **轉錄一開始，transcribe.py 會印一行 `[backend] 本次轉錄後端 = CUDA／MLX／API｜…`——把這行明確轉述給使用者**（他看不到 shell 輸出）：讓他一眼知道走了本機 NVIDIA GPU、Apple Silicon、還是雲端 API，以及對應的速度、費用、音檔是否上雲。若他嫌太慢或不想音檔上雲，這行能立刻讓他判斷該不該換一台機器跑。
 語言：預設讓 Whisper **自動偵測**（英文課→英文逐字稿、中文課→中文）。只有在你明確知道語言、要強制時才設環境變數 `COURSE2NOTES_LANG`（如 `zh`／`en`／`ja`）。**別預設塞 `zh`**，否則英文課會被硬套中文 ASR 產出亂碼。
@@ -192,6 +206,7 @@ Google 的流量仍是全球最高、傳統搜尋沒有消失；ChatGPT 已是�
 - `node recon.js <課程網址> [cdp]` — 偵察，dump 連結樣式與偵測到的媒體 host（cdp 預設 `http://127.0.0.1:9222`）
 - `node sniff.js <urls.txt> <out.json> [origin] [cdp]` — 逐一用瀏覽器載入單元頁、攔 vimeo/soundcloud/youtube/hls，回填 host 與可下載 URL
 - `node download.js <manifest.json> <audio_dir>` — 讀 manifest，對每個可下載項用 yt-dlp 抓 audio-only
+- `python subclean.py <subs_dir> <transcript_dir>`（Mac/Linux 用 `python3`）— 字幕（.vtt/.srt）→ 逐字稿；去滾動重複與 inline tag，輸出與 transcribe.py 同名同格式，零額外相依
 - `python transcribe.py <audio_dir> <transcript_dir> [--api]`（**Mac/Linux 用 `python3`**）— 自動選後端：NVIDIA→faster-whisper、Apple Silicon Mac→mlx-whisper（兩者免費本機）、Intel Mac／AMD／無顯卡→OpenAI API（**音檔會上傳 OpenAI**）；`--api` 強制走 API
 - `node slides.js <單元視訊> <out_dir> [scene_threshold=0.4] [max=40]` —（依步驟 1 使用者選擇；投影片型才做）ffmpeg 場景偵測抽候選投影片＋時間戳，供子代理挑選嵌入筆記
 - `node render.js <notes_dir> <out.html> "<標題>" [語言]` — 產 self-contained HTML（被引用的 `slides/*.jpg` 自動內嵌成 data URI、可點擊放大）
