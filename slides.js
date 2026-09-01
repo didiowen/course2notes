@@ -21,7 +21,7 @@ if (ff(['-version']).status !== 0) { console.error('[需要] 找不到 ffmpeg，
 // 場景偵測 + showinfo（拿時間戳）+ 縮圖。-vsync vfr 只輸出被 select 選中的格。
 const pat = path.join(OUT, '%03d.jpg');
 const vf = `select='gt(scene\\,${THRESH})',showinfo,scale='min(960,iw)':-2`;
-const r = ff(['-hide_banner', '-i', VIDEO, '-vf', vf, '-vsync', 'vfr', '-q:v', '5', '-y', pat]);
+const r = ff(['-hide_banner', '-i', VIDEO, '-vf', vf, '-fps_mode', 'vfr', '-q:v', '5', '-y', pat]);
 if (r.status !== 0 && !fs.readdirSync(OUT).some(f => /^\d+\.jpg$/.test(f))) {
   console.error('[ERR] ffmpeg 抽圖失敗：\n' + (r.stderr || '').slice(-500)); process.exit(3);
 }
