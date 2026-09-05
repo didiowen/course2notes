@@ -225,7 +225,7 @@ if backend == "mlx":
             _rtf = (_elapsed / _dur) if _dur else 0.0
             print(f"[done] {name}: {len(rows)} segments｜音檔 {_dur/60:.1f} 分，耗時 {_elapsed/60:.1f} 分"
                   + (f"（{_rtf:.2f}× 即時）" if _rtf else ""), flush=True)
-            if _rtf > 1.0:
+            if _rtf > 1.0 and "turbo" not in MLX_REPO:
                 print("[WARN] 轉錄比即時還慢——多半是模型選得太重。設 COURSE2NOTES_MLX_MODEL="
                       "mlx-community/whisper-large-v3-turbo 會快很多。", flush=True)
         except Exception as e:
