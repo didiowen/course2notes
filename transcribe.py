@@ -2,7 +2,7 @@
 # 用法（Mac/Linux 用 python3）：
 #   本機/自動： python transcribe.py <audio_dir> <transcript_dir>
 #   強制 API ： python transcribe.py <audio_dir> <transcript_dir> --api
-import os, sys, json, glob, re, platform
+import os, sys, json, glob, re, platform, time
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -107,7 +107,7 @@ else:
 # ---- 明確宣告本次後端：讓使用者一眼看出走了哪條路（速度／費用／音檔是否離開本機）----
 _BACKEND_BANNER = {
     "cuda": "本機 NVIDIA GPU · faster-whisper large-v3（免費、音檔不離開這台電腦、最快）",
-    "mlx":  "本機 Apple Silicon · mlx-whisper large-v3（免費、音檔不離開這台電腦）",
+    "mlx":  "本機 Apple Silicon · mlx-whisper large-v3-turbo（免費、音檔不離開這台電腦）",
     "api":  "OpenAI Whisper API · whisper-1（付費約 US$0.006/分鐘、音檔會上傳到 OpenAI、速度取決於網路）",
 }
 print(f"[backend] 本次轉錄後端 = {backend.upper()}｜{_BACKEND_BANNER.get(backend, backend)}", flush=True)
@@ -198,22 +198,36 @@ if backend == "mlx":
         print("[需要] 偵測到 Apple Silicon Mac，但未安裝 mlx-whisper（吃 Mac GPU、免費本機轉錄）。"
               "請 pip3 install -r requirements-mac.txt（若報 externally-managed-environment 就加 --break-system-packages），或改用 --api。", flush=True)
         sys.exit(2)
-    MLX_REPO = os.environ.get("COURSE2NOTES_MLX_MODEL", "mlx-community/whisper-large-v3-mlx")
-    print(f"[model] MLX {MLX_REPO}（Apple Silicon 本機；第一次會從 huggingface.co 下載約 1–3GB 模型、只需一次，網路慢請耐心等）", flush=True)
+    # 預設用 large-v3-turbo：turbo 只有 4 層 decoder，實測在 Apple Silicon 上比 large-v3 快 20 倍以上。
+    # large-v3（mlx-community/whisper-large-v3-mlx）在 M 系列筆電實測「比即時還慢」——60 秒音檔要跑 5 分鐘，
+    # 一堂兩小時的課會跑十小時以上，看起來就像當掉了（2026-09-06 實測）。要更高精度才手動設環境變數換回去。
+    MLX_REPO = os.environ.get("COURSE2NOTES_MLX_MODEL", "mlx-community/whisper-large-v3-turbo")
+    print(f"[model] MLX {MLX_REPO}（Apple Silicon 本機；第一次會從 huggingface.co 下載約 1–2GB 模型、只需一次，網路慢請耐心等）", flush=True)
+    print("[model] 想換模型：設環境變數 COURSE2NOTES_MLX_MODEL=<hf repo>（例如 mlx-community/whisper-large-v3-mlx 精度略高、但慢非常多）", flush=True)
     fails = []
     for audio, base in jobs:
         name = os.path.basename(base)
         print(f"[job] {os.path.basename(audio)} -> {name} (MLX)", flush=True)
         try:
             kw = {"language": LANG} if LANG else {}  # 沒指定就自動偵測
+            # verbose=False 才會印出 mlx-whisper 的進度條；留著預設的 None 在非終端機（排程、nohup、
+            # 被 agent 呼叫）時完全不輸出，長音檔會看起來像整個卡死（2026-09-06 實測）。
+            _t0 = time.time()
             r = mlx_whisper.transcribe(audio, path_or_hf_repo=MLX_REPO,
-                    condition_on_previous_text=False, **kw)
+                    condition_on_previous_text=False, verbose=False, **kw)
+            _elapsed = time.time() - _t0
             rows = [{"start": float(s.get("start") or 0.0), "end": float(s.get("end") or 0.0),
                      "text": (s.get("text") or "").strip()} for s in r.get("segments", [])]
             if not rows and (r.get("text") or "").strip():
                 rows = [{"start": 0.0, "end": 0.0, "text": r["text"].strip()}]
             write_local_outputs(base, rows, r.get("language") or LANG)
-            print(f"[done] {name}: {len(rows)} segments", flush=True)
+            _dur = rows[-1]["end"] if rows else 0.0
+            _rtf = (_elapsed / _dur) if _dur else 0.0
+            print(f"[done] {name}: {len(rows)} segments｜音檔 {_dur/60:.1f} 分，耗時 {_elapsed/60:.1f} 分"
+                  + (f"（{_rtf:.2f}× 即時）" if _rtf else ""), flush=True)
+            if _rtf > 1.0:
+                print("[WARN] 轉錄比即時還慢——多半是模型選得太重。設 COURSE2NOTES_MLX_MODEL="
+                      "mlx-community/whisper-large-v3-turbo 會快很多。", flush=True)
         except Exception as e:
             fails.append(name); print(f"[ERR] {name}: {e}", flush=True)
             _m = str(e).lower()
